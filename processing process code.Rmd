@@ -1,0 +1,283 @@
+---
+title: "stats_141xp_final_project_version_2"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+### Part 1: Matching school names
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(tools)
+library(stringdist)
+library(RecordLinkage)
+##read the raw data
+raw_data = read.csv("2023-national-universities-2014-2023-metrics-for-stats-consulting-23W-2014-2023-T11-32-08-25-cs-2023-01-19T193212.csv")
+dim(raw_data)
+
+## subset the data for 2023 issue year
+data_2023 = raw_data[raw_data$Issue.year == 2023,]
+colSums(is.na(data_2023)) ## No data for the Footnote variable
+
+###read the cleaned dataset
+cleaned_data = readxl::read_xlsx("Longitudinal USNWR ranking data.xlsx")
+dim(cleaned_data)
+colSums(is.na(cleaned_data)) # Metric value has 4063
+head(cleaned_data)
+```
+
+
+```{r}
+#### Get the unique school names from cleaned dataset and sort them alphabetically
+#### 430 unique school names for the cleaned dataset
+preferred_names= cleaned_data$`Institution Name` %>% unique() %>% sort()
+#### Get the unique school names from raw dataset for issue year 2023 and sort them alphabetically
+## 443 unique school names for the raw data of 2023 issue year
+names_2023 = data_2023$Name %>% unique() %>% sort()
+
+######################## Round 1: match all the school that already have exact names 
+unmodified_ind_match_1 = which(preferred_names %in% names_2023)
+unmodified_ind_match_2 = which(names_2023 %in% preferred_names)
+##### Result table 1
+df_1 = data.frame(preferred_names[unmodified_ind_match_1], names_2023[unmodified_ind_match_2])
+dim(df_1)  ## 346 school names already match without doing anything.
+
+######################### Round 2: Implement fuzzy matching method by Jaro-Winkler distance
+######### Find the indexes of schools that are not matched
+ind_unmatched_1 = which(!(preferred_names %in% names_2023))
+ind_unmatched_2 = which(!(names_2023 %in% preferred_names))
+######### Find the indexes of schools that are not matched
+######## Exclude the school names that have already matched in both
+shorter_preferred_names = preferred_names[ind_unmatched_1]
+length(shorter_preferred_names) #### 84 school names
+shorter_names_2023 = names_2023[ind_unmatched_2]
+length(shorter_names_2023) ##### 97 unmatched school names in 2023 dataset
+
+##### Clarification: Jaro-Winkler similarity measures the number of characters between two strings that need to be edited for the strings to match, but Jaro-Winkler gives more weight to the strings that match in earlier characters (i.e., to the first half of the string)
+n = length(shorter_names_2023)
+best_similarity_scores = numeric(n)
+best_matched_school_ind = numeric(n)
+for(i in seq_len(n)){
+#### This step means we compare certain name of from the  shorter_names_2023 to 97 school name from shorter_preferred_names, then find the similarity scores.
+#### Then, use max function to find the best score which mean the best match 
+  similarity_scores = jarowinkler(shorter_names_2023[i], shorter_preferred_names) 
+  best_similarity_scores[i] = max(similarity_scores)
+  best_matched_school_ind[i] = which.max(similarity_scores)
+}
+prospective_matched_schools = shorter_preferred_names[best_matched_school_ind]
+######  Result table 2 using Jaro-Winkler distance
+df_2 = data.frame(shorter_names_2023, 
+                  prospective_matched_schools,
+                  ind_unmatched_2, 
+                  best_matched_school_ind,
+                  best_similarity_scores) 
+df_2 = df_2[order(df_2$best_similarity_scores, decreasing = TRUE),]
+######## Find the third quantile of the similarity scores vec.
+####### Notice that the scores that are larger than Q3 tend to give the good result. 
+q3 = quantile(df_2$best_similarity_scores, 0.75)
+
+#####  Result table 3 containing school names that give correct matches
+df_3 = df_2[which(df_2$best_similarity_scores >= q3),] 
+dim(df_3) #### We can match 25 school names using Jaro-Winkler distance
+
+############################### Round 3: Implement fuzzy matching method by Levenshtein distance
+####### Table include school names that we can not match after round 2
+unmatched_df =  df_2[which(df_2$best_similarity_scores < q3),]
+dim(unmatched_df) ###### 72 school names cannot match
+##### Truncate the number of school names that we need to work on
+shorter_names_2023_2 = shorter_names_2023[!(shorter_names_2023 %in% df_3$shorter_names_2023)]
+length(shorter_names_2023_2)
+shorter_preferred_names_2 = shorter_preferred_names[!(shorter_preferred_names     %in%df_3$prospective_matched_schools)]
+length(shorter_preferred_names_2)
+#### This step means we compare certain name of from the  shorter_names_2023 to 72 school names from shorter_preferred_names_2, then find the similarity scores.
+#### Then, use max function to find the best score which mean the best match 
+n2 = length(shorter_names_2023_2)
+best_similarity_scores_2 = numeric(n2)
+best_matched_school_ind_2 = numeric(n2)
+for(i in seq_len(n2)){
+  similarity_scores_2 = levenshteinSim(shorter_names_2023_2[i], shorter_preferred_names_2) 
+  best_similarity_scores_2[i] = max(similarity_scores_2)
+  best_matched_school_ind_2[i] = which.max(similarity_scores_2)
+}
+prospective_matched_schools_2 = shorter_preferred_names_2[best_matched_school_ind_2]
+
+######### Result table 4 using Levenshtein distance
+df_4 = data.frame(shorter_names_2023_2, 
+                  prospective_matched_schools_2,
+                  best_similarity_scores_2)
+df_4 = df_4[order(df_4$best_similarity_scores_2, decreasing = TRUE), ]
+######### Result table 5 containing school names that give correct matches
+df_5 = df_4[df_4$best_similarity_scores_2 >= 0.8260870,] 
+dim(df_5) #### 5 more matches
+########### Round 4: 
+##### Truncate the number of school names 
+shorter_names_2023_3 = shorter_names_2023_2[!(shorter_names_2023_2 %in% df_5$shorter_names_2023_2)]
+length(shorter_names_2023_3) ###### 67 unmatched school names
+shorter_preferred_names_3 = shorter_preferred_names_2[!(shorter_preferred_names_2     %in%df_5$prospective_matched_schools_2)]
+length(shorter_preferred_names_3)
+
+########### Find new school names in the national university of 2023 list
+######### Need data of previous year
+data_2022 = raw_data %>% 
+  filter(Issue.year == 2022, School.Type != "National Universities") %>% 
+  group_by(Name) %>%
+  select(Name, School.Type) %>%
+  summarise(
+    count = n()
+  )
+dim(data_2022)### 62 schools in the previous year that are not National Universities 
+new_school_ind = which(shorter_names_2023_3 %in% data_2022$Name)
+new_school_names = shorter_names_2023_3[new_school_ind]
+
+####### Truncate the number of school names need to match
+shorter_names_2023_4 = shorter_names_2023_3[which(!(shorter_names_2023_3 %in% data_2022$Name))] 
+length(shorter_names_2023_4) ### 11 school names
+
+####### Remove common word of and the location parts of some particular cases 
+shorter_names_2023_4_modified = shorter_names_2023_4 %>% str_replace(" at", "") %>%
+  str_replace(",.*", "") %>% 
+  str_replace("University", "") %>% 
+  str_replace("The ", "")
+shorter_preferred_names_3_modified = shorter_preferred_names_3 %>% str_replace_all(" College", "") %>% 
+  str_replace("--", " ") %>% 
+  str_replace("University", "")
+########## Round 5: Implement fuzzy matching method by Jaro-Winkler distance again, but set a high threshold
+
+n3 = length(shorter_names_2023_4_modified)
+best_similarity_scores_3 = numeric(n3)
+best_matched_school_ind_3 = numeric(n3)
+for(i in seq_len(n3)){
+
+  similarity_scores = jarowinkler(shorter_names_2023_4_modified[i], shorter_preferred_names_3_modified) 
+  best_similarity_scores_3[i] = max(similarity_scores)
+  best_matched_school_ind_3[i] = which.max(similarity_scores)
+}
+prospective_matched_schools_3 = shorter_preferred_names_3[best_matched_school_ind_3]
+######  Result table 
+df_6 = data.frame(shorter_names_2023_4, 
+                  prospective_matched_schools_3,
+                  best_similarity_scores_3) 
+df_6 = df_6[order(df_6$best_similarity_scores_3, decreasing = TRUE),]
+
+df_7 = df_6[df_6$best_similarity_scores_3 >=0.9085714,] 
+dim(df_7)
+shorter_names_2023_5 = shorter_names_2023_4[!(shorter_names_2023_4 %in% df_7$shorter_names_2023_4)]
+length(shorter_names_2023_5) ##### These 2 school names are truly new since they only have data in this year 
+```
+
+```{r}
+####### Create a final result
+vec1 = c(df_1$names_2023.unmodified_ind_match_2., 
+         df_3$shorter_names_2023, 
+         df_5$shorter_names_2023_2, 
+         df_7$shorter_names_2023_4,
+         new_school_names, 
+         shorter_names_2023_5)
+vec2 = c(df_1$preferred_names.unmodified_ind_match_1.,
+         df_3$prospective_matched_schools,
+         df_5$prospective_matched_schools_2,
+         df_7$prospective_matched_schools_3, 
+          new_school_names,
+         shorter_names_2023_5)
+
+
+vec3 = c(rep("Exact Match", length(df_1$preferred_names.unmodified_ind_match_1.)), 
+          rep("Prospective Match", length(c(df_3$shorter_names_2023, df_5$shorter_names_2023_2,  df_7$shorter_names_2023_4))), 
+          rep("New School", length(new_school_names)), rep("Unmatched", length( shorter_names_2023_5)))
+
+levels_vec3 = c("Exact Match", "Prospective Match", "New School", "Unmatched")
+final_result = data.frame("Raw Name" = vec1, "Standardized names" = vec2, "Level" = factor(vec3, levels = levels_vec3))
+final_result = final_result[order(final_result$Standardized.names),]
+dim(final_result)
+```
+
+
+
+```{r}
+########## Code for graph on the final report
+# library(plotly)
+# final_result%>% group_by(Name) %>% summarise(count = n())
+# g <- ggplot(final_result, aes(x = Level))
+# # Number of cars in each class:
+# g + geom_bar(aes(fill = Level)) +
+#   scale_fill_manual(values = c("steelblue", "darkorange", "forestgreen", "maroon")) +
+#   labs(title = "Number of School Names in Each Match Type", x = "Match Type")
+```
+
+#### Part 2: Matching metrics
+
+```{r}
+preferred_metrics = cleaned_data$`Metric Name` %>% unique() %>%  sort()
+raw_2023_metrics = data_2023$Metric.description %>% unique() %>% sort()
+### Clean up the text, remove unnecessary parts
+raw_2023_metrics_modified = raw_2023_metrics %>% str_replace("\\(.*\\)", "")
+raw_2023_metrics_modified = raw_2023_metrics
+n = length(raw_2023_metrics)
+best_similarity_scores = numeric(n)
+best_matched_metric_ind = numeric(n)
+for(i in seq_len(n)){
+  similarity_scores = jarowinkler(raw_2023_metrics_modified[i], preferred_metrics) 
+  best_similarity_scores[i] = max(similarity_scores)
+  best_matched_metric_ind[i] = which.max(similarity_scores)
+}
+prospective_matched_metrics = preferred_metrics[best_matched_metric_ind]
+######  Result table  using Jaro-Winkler distance
+df = data.frame(raw_2023_metrics, 
+                  prospective_matched_metrics,
+                  best_similarity_scores) 
+df = df[order(df$best_similarity_scores, decreasing = T),] ## They perfectly match.
+df[31,2] = df[31,1]
+df[33,2] = df[33,1]
+df[34,2] = df[34,1]
+##### Some metrics are slightly changed.
+#### Note: "6-Year Graduation Rate Of Students Who Received A Pell Grant (ranking component)" and "6-Year Graduation Rate Of Students Who Received A Pell Grant (survey field)" are identical and recorded as "6-year graduation rate of students who received a Pell grant" in cleaned data set. 
+```
+
+###### Part3: Standarize the school names and metrics for the 2023 data
+
+```{r}
+########## Create a look-up table for school names
+lookup_1= final_result$Standardized.names
+names(lookup_1) = final_result$Raw.Name
+data_2023$Name = lookup_1[data_2023$Name] %>% unname() ### Change/standardize school names for the whole 2023 dataset
+length(unique(data_2023$Name))
+########## Create a look-up table for metrics
+lookup_2= df$prospective_matched_metrics
+names(lookup_2) = df$raw_2023_metrics
+data_2023$Metric.description = lookup_2[data_2023$Metric.description] %>% unname() ### Change/standardize metrics for the whole 2023 dataset
+length(unique(data_2023$Metric.description))
+
+data_2023$Value = round(data_2023$Value, 3)
+data_2023 = data_2023[,-c(6,8,9)]
+# data_2023 %>% mutate(Ranking_Name = rep("US News", nrow(data_2023)))
+data_2023$Ranking_type = rep("US News", nrow(data_2023))
+names(data_2023) = c("Institution Name","Metric Value", "Metric Name", "Issue Year" , "Ranking Type", "Institution Type", "Ranking Name" )
+data_2023$`Ranking Type` = rep("National", nrow(data_2023))
+data_2023 = as_tibble(data_2023)
+############### Append 2023 data to the clean data 
+inner_join = cleaned_data%>% full_join(data_2023) 
+wider_df = pivot_wider(inner_join, names_from = "Metric Name", values_from = "Metric Value")
+long_df = pivot_longer(wider_df, 
+                       cols = 6:50,
+                       names_to = "Metric Name",
+                       values_to = "Metric Value")
+
+############ The codes to find the duplicated rows
+# dup = data_2023%>%
+#   dplyr::group_by(`Issue Year`, `Ranking Name`, `Ranking Type`, `Institution Name`, `Institution Type`,
+#   `Metric Name`) %>%
+#   dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+#   dplyr::filter(n > 1L)
+######################
+# write_csv(long_df, "appened_2023_data.csv")
+```
+
+
+
+
